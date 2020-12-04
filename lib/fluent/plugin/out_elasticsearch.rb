@@ -1004,29 +1004,45 @@ EOC
     end
 
     def template_installation_actual(deflector_alias, template_name, customize_template, application_name, target_index, ilm_policy_id, host=nil)
-      if template_name && @template_file
-        if !@logstash_format && (deflector_alias.nil? || (@alias_indexes.include? deflector_alias)) && (@template_names.include? template_name)
-          if deflector_alias
-            log.debug("Index alias #{deflector_alias} and template #{template_name} already exist (cached)")
-          else
-            log.debug("Template #{template_name} already exists (cached)")
-          end
-        else
-          retry_operate(@max_retry_putting_template,
-                        @fail_on_putting_template_retry_exceed,
-                        @catch_transport_exception_on_retry) do
-            if customize_template
-              template_custom_install(template_name, @template_file, @use_legacy_template, @template_overwrite, customize_template, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
-            else
-              template_install(template_name, @template_file, @use_legacy_template, @template_overwrite, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
-            end
-            ilm_policy = @ilm_policies[ilm_policy_id] || {}
-            create_rollover_alias(target_index, @rollover_index, deflector_alias, application_name, @index_date_pattern, @index_separator, @enable_ilm, ilm_policy_id, ilm_policy, @ilm_policy_overwrite, host)
-          end
-          @alias_indexes << deflector_alias unless deflector_alias.nil?
-          @template_names << template_name
-        end
+      if !template_name || !@template_file
+        return
       end
+
+      if !@logstash_format && (deflector_alias.nil? || (@alias_indexes.include? deflector_alias)) && (@template_names.include? template_name)
+        if deflector_alias
+          log.debug("Index alias #{deflector_alias} and template #{template_name} already exist (cached)")
+        else
+          log.debug("Template #{template_name} already exists (cached)")
+        end
+
+        return
+      end
+
+      retry_operate(@max_retry_putting_template, @fail_on_putting_template_retry_exceed, @catch_transport_exception_on_retry) do
+        template_installation_name = @enable_ilm ? deflector_alias : template_name
+
+        if !need_install_template?(template_installation_name, @use_legacy_template, host, @template_overwrite)
+          log.debug("Template '#{template_installation_name}' configured and already installed.")
+        else
+          template = get_template(@template_file, customize_template)
+          if @enable_ilm
+            template = setup_template_with_ilm(deflector_alias, target_index, ilm_policy_id, template, @index_separator, @use_legacy_template)
+          end
+
+          template_put(template_installation_name, template, @use_legacy_template, host)
+
+          if @overwrite
+            log.debug("Template '#{template_installation_name}' overwritten with #{@template_file}.")
+          else
+            log.info("Template configured, but no template installed. Installed '#{template_installation_name}' from #{@template_file}.")
+          end
+        end
+
+        ilm_policy = @ilm_policies[ilm_policy_id] || {}
+        create_rollover_alias(target_index, @rollover_index, deflector_alias, application_name, @index_date_pattern, @index_separator, @enable_ilm, ilm_policy_id, ilm_policy, @ilm_policy_overwrite, host)
+      end
+      @alias_indexes << deflector_alias unless deflector_alias.nil?
+      @template_names << template_name
     end
 
     # send_bulk given a specific bulk request, the original tag,

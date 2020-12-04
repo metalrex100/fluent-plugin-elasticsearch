@@ -2,15 +2,7 @@ require 'fluent/error'
 require_relative './elasticsearch_error'
 
 module Fluent::ElasticsearchIndexTemplate
-  def get_template(template_file)
-    if !File.exists?(template_file)
-      raise "If you specify a template_name you must specify a valid template file (checked '#{template_file}')!"
-    end
-    file_contents = IO.read(template_file).gsub(/\n/,'')
-    JSON.parse(file_contents)
-  end
-
-  def get_custom_template(template_file, customize_template)
+  def get_template(template_file, customize_template = {})
     if !File.exists?(template_file)
       raise "If you specify a template_name you must specify a valid template file (checked '#{template_file}')!"
     end
@@ -21,8 +13,8 @@ module Fluent::ElasticsearchIndexTemplate
     JSON.parse(file_contents)
   end
 
-  def template_exists?(name, host = nil)
-    if @use_legacy_template
+  def template_exists?(name, is_legacy, host = nil)
+    if is_legacy
       client(host).indices.get_template(:name => name)
     else
       client(host).indices.get_index_template(:name => name)
@@ -74,77 +66,51 @@ module Fluent::ElasticsearchIndexTemplate
     end
   end
 
-  def template_install(name, template_file, is_legacy, overwrite, enable_ilm = false, deflector_alias_name = nil, ilm_policy_id = nil, host = nil, target_index = nil, index_separator = '-')
-    inject_template_name = get_template_name(enable_ilm, name, deflector_alias_name)
+  def need_install_template?(template_installation_name, is_legacy, host, overwrite)
+    overwrite || !template_exists?(template_installation_name, is_legacy, host)
+  end
 
-    if !overwrite && template_exists?(inject_template_name, host)
-      log.debug("Template '#{inject_template_name}' configured and already installed.")
-    end
-
-    template = get_template(template_file)
-    if enable_ilm
-      template = inject_ilm_settings_to_template(deflector_alias_name, target_index, ilm_policy_id, template, is_legacy, index_separator)
-    end
-
-    template_put(inject_template_name, template, is_legacy, host)
-
-    if overwrite
-      log.debug("Template '#{inject_template_name}' overwritten with #{template_file}.")
+  def setup_template_with_ilm(deflector_alias_name, target_index, ilm_policy_id, template, index_separator, is_legacy)
+    if is_legacy
+      template = inject_ilm_settings_to_legacy_template(deflector_alias_name, target_index, ilm_policy_id, template, index_separator)
     else
-      log.info("Template configured, but no template installed. Installed '#{inject_template_name}' from #{template_file}.")
+      template = inject_ilm_settings_to_template(deflector_alias_name, target_index, ilm_policy_id, template, index_separator)
     end
+
+    template
   end
 
-  def template_custom_install(template_name, template_file, is_legacy, overwrite, customize_template, enable_ilm, deflector_alias_name, ilm_policy_id, host, target_index, index_separator)
-    template_custom_name = get_template_name(enable_ilm, template_name, deflector_alias_name)
-
-    if !overwrite && template_exists?(template_custom_name, host)
-      log.debug("Template '#{template_custom_name}' configured and already installed.")
-    end
-
-    template = get_custom_template(template_file, customize_template)
-    if enable_ilm
-      template = inject_ilm_settings_to_template(deflector_alias_name, target_index, ilm_policy_id, template, is_legacy, index_separator)
-    end
-
-    template_put(template_custom_name, template, is_legacy, host)
-
-    if overwrite
-      log.debug("Template '#{template_custom_name}' overwritten with #{template_file}.")
-    else
-      log.info("Template configured, but no template installed. Installed '#{template_custom_name}' from #{template_file}.")
-    end
-  end
-
-  def get_template_name(enable_ilm, template_name, deflector_alias_name)
-    enable_ilm ? deflector_alias_name : template_name
-  end
-
-  def inject_ilm_settings_to_template(deflector_alias, target_index, ilm_policy_id, template, is_legacy, index_separator)
+  def inject_ilm_settings_to_legacy_template(deflector_alias, target_index, ilm_policy_id, template, index_separator)
     log.debug("Overwriting index patterns when Index Lifecycle Management is enabled.")
     template['index_patterns'] = "#{target_index}#{index_separator}*"
-    if is_legacy
-      template.delete('template') if template.include?('template')
-      # Prepare settings Hash
-      if !template.key?('settings')
-        template['settings'] = {}
-      end
-      if template['settings'] && (template['settings']['index.lifecycle.name'] || template['settings']['index.lifecycle.rollover_alias'])
-        log.debug("Overwriting index lifecycle name and rollover alias when Index Lifecycle Management is enabled.")
-      end
-      template['settings'].update({ 'index.lifecycle.name' => ilm_policy_id, 'index.lifecycle.rollover_alias' => deflector_alias})
-      template['order'] = template['order'] ? template['order'] + target_index.count(index_separator) + 1 : 51 + target_index.count(index_separator)
-    else
-      # Prepare template.settings Hash
-      if !template['template'].key?('settings')
-        template['template']['settings'] = {}
-      end
-      if template['template']['settings'] && (template['template']['settings']['index.lifecycle.name'] || template['template']['settings']['index.lifecycle.rollover_alias'])
-        log.debug("Overwriting index lifecycle name and rollover alias when Index Lifecycle Management is enabled.")
-      end
-      template['template']['settings'].update({ 'index.lifecycle.name' => ilm_policy_id, 'index.lifecycle.rollover_alias' => deflector_alias})
-      template['priority'] = template['priority'] ? template['priority'] + target_index.count(index_separator) + 1 : 101 + target_index.count(index_separator)
+
+    template.delete('template') if template.include?('template')
+    # Prepare settings Hash if it does not exist
+    template['settings'] = {} unless template.key?('settings')
+
+    if template['settings'].key?('index.lifecycle.name') || template['settings'].key?('index.lifecycle.rollover_alias')
+      log.debug("Overwriting index lifecycle name and rollover alias when Index Lifecycle Management is enabled.")
     end
+
+    template['settings'].update({ 'index.lifecycle.name' => ilm_policy_id, 'index.lifecycle.rollover_alias' => deflector_alias})
+    template['order'] = template['order'] ? template['order'] + target_index.count(index_separator) + 1 : 51 + target_index.count(index_separator)
+
+    template
+  end
+
+  def inject_ilm_settings_to_template(deflector_alias, target_index, ilm_policy_id, template, index_separator)
+    log.debug("Overwriting index patterns when Index Lifecycle Management is enabled.")
+    template['index_patterns'] = "#{target_index}#{index_separator}*"
+
+    # Prepare settings Hash if it does not exist
+    template['template']['settings'] = {} unless template['template'].key?('settings')
+
+    if template['template']['settings'].key?('index.lifecycle.name') || template['template']['settings'].key?('index.lifecycle.rollover_alias')
+      log.debug("Overwriting index lifecycle name and rollover alias when Index Lifecycle Management is enabled.")
+    end
+    template['template']['settings'].update({ 'index.lifecycle.name' => ilm_policy_id, 'index.lifecycle.rollover_alias' => deflector_alias})
+    template['priority'] = template['priority'] ? template['priority'] + target_index.count(index_separator) + 1 : 101 + target_index.count(index_separator)
+
     template
   end
 
