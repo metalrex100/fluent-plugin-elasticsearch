@@ -267,7 +267,7 @@ EOC
           retry_operate(@max_retry_putting_template,
                         @fail_on_putting_template_retry_exceed,
                         @catch_transport_exception_on_retry) do
-            templates_hash_install(@templates, @template_overwrite)
+            templates_hash_install(@templates, @template_overwrite, @use_legacy_template)
           end
         end
       end
@@ -1016,9 +1016,9 @@ EOC
                         @fail_on_putting_template_retry_exceed,
                         @catch_transport_exception_on_retry) do
             if customize_template
-              template_custom_install(template_name, @template_file, @template_overwrite, customize_template, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
+              template_custom_install(template_name, @template_file, @use_legacy_template, @template_overwrite, customize_template, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
             else
-              template_install(template_name, @template_file, @template_overwrite, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
+              template_install(template_name, @template_file, @use_legacy_template, @template_overwrite, @enable_ilm, deflector_alias, ilm_policy_id, host, target_index, @index_separator)
             end
             ilm_policy = @ilm_policies[ilm_policy_id] || {}
             create_rollover_alias(target_index, @rollover_index, deflector_alias, application_name, @index_date_pattern, @index_separator, @enable_ilm, ilm_policy_id, ilm_policy, @ilm_policy_overwrite, host)

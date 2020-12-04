@@ -56,8 +56,8 @@ module Fluent::ElasticsearchIndexTemplate
     end
   end
 
-  def template_put(name, template, host = nil)
-    if @use_legacy_template
+  def template_put(name, template, is_legacy, host = nil)
+    if is_legacy
       client(host).indices.put_template(:name => name, :body => template)
     else
       client(host).indices.put_index_template(:name => name, :body => template)
@@ -74,56 +74,45 @@ module Fluent::ElasticsearchIndexTemplate
     end
   end
 
-  def template_install(name, template_file, overwrite, enable_ilm = false, deflector_alias_name = nil, ilm_policy_id = nil, host = nil, target_index = nil, index_separator = '-')
+  def template_install(name, template_file, is_legacy, overwrite, enable_ilm = false, deflector_alias_name = nil, ilm_policy_id = nil, host = nil, target_index = nil, index_separator = '-')
     inject_template_name = get_template_name(enable_ilm, name, deflector_alias_name)
-    if overwrite
-      template_put(inject_template_name,
-                   enable_ilm ? inject_ilm_settings_to_template(deflector_alias_name,
-                                                                target_index,
-                                                                ilm_policy_id,
-                                                                get_template(template_file),
-                                                                index_separator) :
-                     get_template(template_file), host)
 
-      log.debug("Template '#{inject_template_name}' overwritten with #{template_file}.")
-      return
-    end
-    if !template_exists?(inject_template_name, host)
-      template_put(inject_template_name,
-                   enable_ilm ? inject_ilm_settings_to_template(deflector_alias_name,
-                                                                target_index,
-                                                                ilm_policy_id,
-                                                                get_template(template_file),
-                                                                index_separator) :
-                     get_template(template_file), host)
-      log.info("Template configured, but no template installed. Installed '#{inject_template_name}' from #{template_file}.")
-    else
+    if !overwrite && template_exists?(inject_template_name, host)
       log.debug("Template '#{inject_template_name}' configured and already installed.")
+    end
+
+    template = get_template(template_file)
+    if enable_ilm
+      template = inject_ilm_settings_to_template(deflector_alias_name, target_index, ilm_policy_id, template, is_legacy, index_separator)
+    end
+
+    template_put(inject_template_name, template, is_legacy, host)
+
+    if overwrite
+      log.debug("Template '#{inject_template_name}' overwritten with #{template_file}.")
+    else
+      log.info("Template configured, but no template installed. Installed '#{inject_template_name}' from #{template_file}.")
     end
   end
 
-  def template_custom_install(template_name, template_file, overwrite, customize_template, enable_ilm, deflector_alias_name, ilm_policy_id, host, target_index, index_separator)
+  def template_custom_install(template_name, template_file, is_legacy, overwrite, customize_template, enable_ilm, deflector_alias_name, ilm_policy_id, host, target_index, index_separator)
     template_custom_name = get_template_name(enable_ilm, template_name, deflector_alias_name)
-    custom_template = if enable_ilm
-                        inject_ilm_settings_to_template(deflector_alias_name,
-                                                        target_index,
-                                                        ilm_policy_id,
-                                                        get_custom_template(template_file,
-                                                                            customize_template),
-                                                        index_separator)
-                      else
-                        get_custom_template(template_file, customize_template)
-                      end
+
+    if !overwrite && template_exists?(template_custom_name, host)
+      log.debug("Template '#{template_custom_name}' configured and already installed.")
+    end
+
+    template = get_custom_template(template_file, customize_template)
+    if enable_ilm
+      template = inject_ilm_settings_to_template(deflector_alias_name, target_index, ilm_policy_id, template, is_legacy, index_separator)
+    end
+
+    template_put(template_custom_name, template, is_legacy, host)
+
     if overwrite
-      template_put(template_custom_name, custom_template, host)
-      log.info("Template '#{template_custom_name}' overwritten with #{template_file}.")
+      log.debug("Template '#{template_custom_name}' overwritten with #{template_file}.")
     else
-      if !template_exists?(template_custom_name, host)
-        template_put(template_custom_name, custom_template, host)
-        log.info("Template configured, but no template installed. Installed '#{template_custom_name}' from #{template_file}.")
-      else
-        log.debug("Template '#{template_custom_name}' configured and already installed.")
-      end
+      log.info("Template configured, but no template installed. Installed '#{template_custom_name}' from #{template_file}.")
     end
   end
 
@@ -131,10 +120,10 @@ module Fluent::ElasticsearchIndexTemplate
     enable_ilm ? deflector_alias_name : template_name
   end
 
-  def inject_ilm_settings_to_template(deflector_alias, target_index, ilm_policy_id, template, index_separator)
+  def inject_ilm_settings_to_template(deflector_alias, target_index, ilm_policy_id, template, is_legacy, index_separator)
     log.debug("Overwriting index patterns when Index Lifecycle Management is enabled.")
     template['index_patterns'] = "#{target_index}#{index_separator}*"
-    if @use_legacy_template
+    if is_legacy
       template.delete('template') if template.include?('template')
       # Prepare settings Hash
       if !template.key?('settings')
@@ -193,9 +182,9 @@ module Fluent::ElasticsearchIndexTemplate
     end
   end
 
-  def templates_hash_install(templates, overwrite)
+  def templates_hash_install(templates, overwrite, is_legacy)
     templates.each do |key, value|
-      template_install(key, value, overwrite)
+      template_install(key, value, overwrite, is_legacy)
     end
   end
 
